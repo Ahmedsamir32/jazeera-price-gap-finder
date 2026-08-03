@@ -45,13 +45,16 @@ CONFIG = {
     "timeout_seconds": 60,
 }
 
-# SerpAPI's Google Flights engine expects integer codes for these, not the
-# descriptive strings used in CONFIG.
-STOPS_CODES = {
-    "ANY": 0,
-    "NON_STOP": 1,
-    "ONE_STOP_OR_FEWER": 2,
-    "TWO_STOPS_OR_FEWER": 3,
+# SerpAPI's server-side "stops" filter is unreliable: when set to non-stop-only,
+# it silently nulls out the price for some genuinely non-stop itineraries
+# (observed with Jazeera flights) instead of just omitting stopped ones.
+# So we always request "ANY" from the API and filter by stop count ourselves
+# client-side, using this max-stops-allowed mapping instead.
+MAX_STOPS_ALLOWED = {
+    "ANY": None,
+    "NON_STOP": 0,
+    "ONE_STOP_OR_FEWER": 1,
+    "TWO_STOPS_OR_FEWER": 2,
 }
 
 # ---------------- FUNCTIONS ----------------
@@ -84,7 +87,7 @@ def build_params(origin, destination, date_out, date_back, currency, trip_type):
         "departure_id": origin,
         "arrival_id": destination,
         "type": 1 if trip_type == "RT" else 2,
-        "stops": STOPS_CODES[CONFIG["stops"]],
+        "stops": 0,  # always "ANY" — see MAX_STOPS_ALLOWED comment above
         "currency": currency,
         "hl": "en",
         "gl": CONFIG["market"],
@@ -94,15 +97,26 @@ def build_params(origin, destination, date_out, date_back, currency, trip_type):
         params["return_date"] = date_back.strftime("%Y-%m-%d")
     return params
 
-def extract_cheapest_by_airline(data: Dict) -> Dict[str, Dict]:
+def filter_itineraries_by_stops(itineraries: List[Dict], stops_label: str) -> List[Dict]:
+    max_stops = MAX_STOPS_ALLOWED[stops_label]
+    if max_stops is None:
+        return itineraries
+    return [it for it in itineraries if len(it.get("flights", [])) - 1 <= max_stops]
+
+def extract_cheapest_by_airline(data: Dict, stops_label: str = "ANY") -> Dict[str, Dict]:
     """Returns {carrier_code: {"price": float, "name": str}}, keyed by the
     operating carrier of the itinerary's first leg (flight_number, e.g.
     "J9 101" -> "J9"). The API nests airline/price info per itinerary under
     best_flights/other_flights -> flights[0], not at the itinerary top level.
+
+    stops_label filters client-side (see filter_itineraries_by_stops) rather
+    than relying on the API's own stops parameter, which drops prices for some
+    genuinely non-stop itineraries when asked to filter to non-stop only.
     """
     cheapest = {}
     for bucket in ("best_flights", "other_flights"):
-        for itinerary in data.get(bucket, []):
+        itineraries = filter_itineraries_by_stops(data.get(bucket, []), stops_label)
+        for itinerary in itineraries:
             price = itinerary.get("price")
             legs = itinerary.get("flights", [])
             if price is None or not legs:
@@ -161,7 +175,7 @@ def run_scan():
                 time.sleep(CONFIG["sleep_seconds_between_calls"])
                 continue
 
-            cheapest = extract_cheapest_by_airline(data)
+            cheapest = extract_cheapest_by_airline(data, CONFIG["stops"])
             jazeera_entry = cheapest.get("J9")
             jazeera = jazeera_entry["price"] if jazeera_entry else math.nan
             jazeera_available = jazeera_entry is not None

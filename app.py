@@ -72,9 +72,6 @@ if not _has_api_key:
     st.error("No SerpAPI key found. Set SERPAPI_API_KEY in this app's Secrets (or ~/.zshrc locally) and restart.")
     st.stop()
 
-_debug_key = os.environ.get("SERPAPI_API_KEY", "")
-st.caption(f"DEBUG (temporary): key length={len(_debug_key)}, last 4 chars={_debug_key[-4:] if len(_debug_key) >= 4 else _debug_key!r}, core sees={core.SERPAPI_KEY[-4:] if core.SERPAPI_KEY else None}")
-
 MAX_DAYS = 31
 JAZEERA_CODE = "J9"
 
@@ -139,7 +136,7 @@ if submitted:
             progress.progress((i + 1) / num_days)
             continue
 
-        cheapest = core.extract_cheapest_by_airline(data)
+        cheapest = core.extract_cheapest_by_airline(data, STOPS_LABELS[stops_label])
         if cheapest:
             any_itinerary_found = True
 
