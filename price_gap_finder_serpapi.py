@@ -101,7 +101,7 @@ def filter_itineraries_by_stops(itineraries: List[Dict], stops_label: str) -> Li
     max_stops = MAX_STOPS_ALLOWED[stops_label]
     if max_stops is None:
         return itineraries
-    return [it for it in itineraries if len(it.get("flights", [])) - 1 <= max_stops]
+    return [it for it in itineraries if len(it.get("flights") or []) - 1 <= max_stops]
 
 def extract_cheapest_by_airline(data: Dict, stops_label: str = "ANY") -> Dict[str, Dict]:
     """Returns {carrier_code: {"price": float, "name": str}}, keyed by the
@@ -115,10 +115,10 @@ def extract_cheapest_by_airline(data: Dict, stops_label: str = "ANY") -> Dict[st
     """
     cheapest = {}
     for bucket in ("best_flights", "other_flights"):
-        itineraries = filter_itineraries_by_stops(data.get(bucket, []), stops_label)
+        itineraries = filter_itineraries_by_stops(data.get(bucket) or [], stops_label)
         for itinerary in itineraries:
             price = itinerary.get("price")
-            legs = itinerary.get("flights", [])
+            legs = itinerary.get("flights") or []
             if price is None or not legs:
                 continue
             airline_name = legs[0].get("airline")
