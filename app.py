@@ -151,18 +151,35 @@ def option_for_code(code, options):
     return options.index(label) if label in options else 0
 
 
+def _existing_header(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.readline().rstrip("\n").rstrip("\r").split(",")
+    except Exception:
+        return None
+
+
 def load_history():
     if not os.path.exists(HISTORY_PATH):
         return pd.DataFrame(columns=HISTORY_COLUMNS)
     try:
         df = pd.read_csv(HISTORY_PATH, encoding="utf-8")
-        for col in HISTORY_COLUMNS:
-            if col not in df.columns:
-                df[col] = None
-        return df
-    except Exception as e:
-        st.warning(f"Could not read history file ({e}). Starting from an empty history for this view.")
-        return pd.DataFrame(columns=HISTORY_COLUMNS)
+    except Exception:
+        # Most likely an older/ragged schema (columns added since this file
+        # was created) rather than genuine corruption -- try a lenient parse
+        # that skips only the rows that don't fit before giving up entirely.
+        try:
+            df = pd.read_csv(HISTORY_PATH, encoding="utf-8", engine="python", on_bad_lines="skip")
+        except Exception as e:
+            st.warning(
+                f"Could not read the existing history file ({e}). Showing empty history for now — "
+                "it will rebuild from here. (It'll be cleaned up automatically on your next search.)"
+            )
+            return pd.DataFrame(columns=HISTORY_COLUMNS)
+    for col in HISTORY_COLUMNS:
+        if col not in df.columns:
+            df[col] = None
+    return df
 
 
 def append_history(new_rows):
@@ -172,8 +189,22 @@ def append_history(new_rows):
         return True, "Nothing to log."
     try:
         os.makedirs(os.path.dirname(HISTORY_PATH), exist_ok=True)
-        df_new = pd.DataFrame(new_rows, columns=HISTORY_COLUMNS)
         file_exists = os.path.exists(HISTORY_PATH)
+
+        if file_exists and _existing_header(HISTORY_PATH) != HISTORY_COLUMNS:
+            # The file was created by an older version of the app with a
+            # different set of columns -- appending now would produce a
+            # ragged CSV pandas can't parse. Archive the old one (data isn't
+            # lost, just split out) and start a fresh file with today's
+            # schema instead of corrupting it further.
+            legacy_path = HISTORY_PATH.replace(".csv", "_legacy.csv")
+            try:
+                os.replace(HISTORY_PATH, legacy_path)
+            except Exception:
+                pass
+            file_exists = False
+
+        df_new = pd.DataFrame(new_rows, columns=HISTORY_COLUMNS)
         df_new.to_csv(HISTORY_PATH, mode="a", header=not file_exists, index=False, encoding="utf-8")
     except Exception as e:
         return False, f"Could not write history file: {e}"
