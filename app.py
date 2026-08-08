@@ -80,42 +80,86 @@ HISTORY_PATH = os.path.join(os.path.dirname(__file__), "data", "history_log.csv"
 HISTORY_COLUMNS = [
     "Scanned At", "Route", "Date", "Competitor",
     "Competitor Price (KWD)", "Jazeera Price (KWD)", "Price Gap (KWD)", "Alert",
+    "Previous Price (KWD)", "Previous Alert", "Change Note",
 ]
 
-# A few routes already validated in this app; add more here as you confirm
-# them. You can also type any custom route(s) below regardless of what's
-# selected here.
-ROUTE_PRESETS = {
-    "Kuwait → Cairo (KWI → CAI)": ("KWI", "CAI"),
-    "Kuwait → Istanbul (KWI → IST)": ("KWI", "IST"),
-    "Kuwait → Amman (KWI → ADJ)": ("KWI", "ADJ"),
+# Sectors known to this app so far. Add more here as you need them — anything
+# not listed can still be typed manually via "Other".
+AIRPORTS = {
+    "KWI": "Kuwait City",
+    "CAI": "Cairo",
+    "HBE": "Alexandria (Borg El Arab)",
+    "SSH": "Sharm El Sheikh",
+    "HRG": "Hurghada",
+    "LXR": "Luxor",
+    "ASW": "Aswan",
+    "IST": "Istanbul",
+    "SAW": "Istanbul (Sabiha Gökçen)",
+    "ADB": "Izmir",
+    "AYT": "Antalya",
+    "TZX": "Trabzon",
+    "ESB": "Ankara",
+    "ADJ": "Amman (Civil)",
+    "AMM": "Amman (Queen Alia)",
+    "BEY": "Beirut",
+    "DXB": "Dubai",
+    "AUH": "Abu Dhabi",
+    "DOH": "Doha",
+    "RUH": "Riyadh",
+    "JED": "Jeddah",
+    "DMM": "Dammam",
+    "MED": "Medina",
+    "BAH": "Bahrain",
+    "MCT": "Muscat",
+    "BGW": "Baghdad",
+    "BSR": "Basra",
+    "NJF": "Najaf",
+    "EBL": "Erbil",
+    "BOM": "Mumbai",
+    "DEL": "Delhi",
+    "COK": "Kochi",
+    "TRV": "Thiruvananthapuram",
+    "DAC": "Dhaka",
+    "KHI": "Karachi",
+    "LHE": "Lahore",
+    "ISB": "Islamabad",
 }
-
-selected_presets = st.multiselect(
-    "Routes", list(ROUTE_PRESETS.keys()), default=[next(iter(ROUTE_PRESETS))]
-)
-custom_routes_text = st.text_area(
-    "Custom routes (optional)",
-    value="",
-    placeholder="One per line, e.g.\nKWI-DXB\nKWI-JED",
-    help="Any airport-code pairs not already covered by the routes above.",
-)
+OTHER_LABEL = "Other (type code manually)"
 
 
-def parse_custom_routes(text):
-    routes = []
-    for line in text.splitlines():
-        codes = re.findall(r"\b[A-Za-z]{3}\b", line)
-        if len(codes) >= 2:
-            routes.append((codes[0].upper(), codes[1].upper()))
-    return routes
+SELECT_LABEL = "— Select sector —"
+
+
+def airport_options():
+    opts = [SELECT_LABEL]
+    opts += [f"{name} ({code})" for code, name in sorted(AIRPORTS.items(), key=lambda kv: kv[1])]
+    opts.append(OTHER_LABEL)
+    return opts
+
+
+def resolve_code(selection, manual_text):
+    if selection in (SELECT_LABEL, ""):
+        return ""
+    if selection == OTHER_LABEL:
+        return manual_text.strip().upper()
+    m = re.search(r"\(([A-Za-z]{3})\)$", selection)
+    return m.group(1).upper() if m else selection.strip().upper()
+
+
+def option_for_code(code, options):
+    label = f"{AIRPORTS[code]} ({code})" if code in AIRPORTS else None
+    return options.index(label) if label in options else 0
 
 
 def load_history():
     if not os.path.exists(HISTORY_PATH):
         return pd.DataFrame(columns=HISTORY_COLUMNS)
     try:
-        return pd.read_csv(HISTORY_PATH)
+        df = pd.read_csv(HISTORY_PATH)
+        for col in HISTORY_COLUMNS:
+            if col not in df.columns:
+                df[col] = None
+        return df
     except Exception:
         return pd.DataFrame(columns=HISTORY_COLUMNS)
 
@@ -128,6 +172,67 @@ def append_history(new_rows):
     file_exists = os.path.exists(HISTORY_PATH)
     df_new.to_csv(HISTORY_PATH, mode="a", header=not file_exists, index=False)
 
+
+def fmt_num(x):
+    if pd.isna(x):
+        return ""
+    if isinstance(x, (int, float)):
+        return f"{x:g}"
+    return x
+
+
+def highlight_alert(row):
+    if row.get("Alert") == "Yes":
+        return ["background-color: #FCE4E7"] * len(row)
+    if row.get("Alert") == "No":
+        return ["background-color: #E5F3E8"] * len(row)
+    return [""] * len(row)
+
+
+def highlight_history(row):
+    styles = highlight_alert(row)
+    note = row.get("Change Note")
+    if note not in (None, "", "No change", "First time seen") and not (isinstance(note, float) and pd.isna(note)):
+        return ["background-color: #FDECC8"] * len(row)  # amber overrides -- flags a real change
+    return styles
+
+
+# ---------------- Route rows (outside the form so "Add" can rerun live) ----------------
+
+if "num_routes" not in st.session_state:
+    st.session_state.num_routes = 1
+
+st.subheader("Routes")
+AIRPORT_OPTIONS = airport_options()
+
+route_pairs = []
+for i in range(st.session_state.num_routes):
+    col1, col2, col3 = st.columns([5, 5, 1])
+    with col1:
+        default_idx = option_for_code("KWI", AIRPORT_OPTIONS) if i == 0 else 0
+        from_sel = st.selectbox("From (sector)", AIRPORT_OPTIONS, index=default_idx, key=f"from_sel_{i}")
+        from_manual = ""
+        if from_sel == OTHER_LABEL:
+            from_manual = st.text_input("From — airport code", key=f"from_manual_{i}")
+    with col2:
+        default_idx = option_for_code("CAI", AIRPORT_OPTIONS) if i == 0 else 0
+        to_sel = st.selectbox("To (sector)", AIRPORT_OPTIONS, index=default_idx, key=f"to_sel_{i}")
+        to_manual = ""
+        if to_sel == OTHER_LABEL:
+            to_manual = st.text_input("To — airport code", key=f"to_manual_{i}")
+    with col3:
+        st.markdown("<div style='height: 1.9rem'></div>", unsafe_allow_html=True)
+        if st.session_state.num_routes > 1:
+            if st.button("✕", key=f"remove_route_{i}", help="Remove this route"):
+                st.session_state.num_routes -= 1
+                st.rerun()
+    route_pairs.append((resolve_code(from_sel, from_manual), resolve_code(to_sel, to_manual)))
+
+if st.button("+ Add another route"):
+    st.session_state.num_routes += 1
+    st.rerun()
+
+# ---------------- Search form ----------------
 
 with st.form("search_form"):
     trip_type_label = st.radio("Trip type", ["One-way", "Round-trip"], horizontal=True)
@@ -149,12 +254,15 @@ with st.form("search_form"):
     submitted = st.form_submit_button("Search", width="stretch")
 
 if submitted:
-    routes = [ROUTE_PRESETS[label] for label in selected_presets] + parse_custom_routes(custom_routes_text)
-    routes = list(dict.fromkeys(routes))  # dedupe, keep order
+    complete_pairs = [r for r in route_pairs if r[0] and r[1]]
+    incomplete_count = len(route_pairs) - len(complete_pairs)
+    routes = list(dict.fromkeys(complete_pairs))  # dedupe, keep order
 
     if not routes:
-        st.error("Select at least one route, or enter a custom route.")
+        st.error("Pick a valid From/To sector for at least one route.")
         st.stop()
+    if incomplete_count:
+        st.warning(f"Skipped {incomplete_count} route row(s) left at \"{SELECT_LABEL}\".")
     if start_date > end_date:
         st.error("The start date must be before the end date.")
         st.stop()
@@ -180,6 +288,8 @@ if submitted:
     competitor_seen = False
     scanned_at = datetime.now().strftime("%Y-%m-%d %H:%M")
 
+    history_before = load_history()  # snapshot to diff new results against
+
     total_steps = len(routes) * len(dates)
     step = 0
     progress = st.progress(0.0, text="Starting search...")
@@ -187,6 +297,7 @@ if submitted:
     for origin, destination in routes:
         route_label = f"{origin}→{destination}"
         for d in dates:
+            date_str = d.strftime("%Y-%m-%d")
             date_back = d + timedelta(days=stay_nights) if trip_type == "RT" else None
             params = core.build_params(origin, destination, d, date_back, core.CONFIG["currency"], trip_type)
 
@@ -222,21 +333,47 @@ if submitted:
                     alert_label = "Jazeera N/A"
                     gap = math.nan
 
+                prior = history_before[
+                    (history_before["Route"] == route_label)
+                    & (history_before["Competitor"] == entry["name"])
+                    & (history_before["Date"] == date_str)
+                ]
+                if not prior.empty:
+                    prior_row = prior.sort_values("Scanned At").iloc[-1]
+                    prev_price = prior_row["Competitor Price (KWD)"]
+                    prev_alert = prior_row["Alert"]
+                    prev_jazeera = prior_row.get("Jazeera Price (KWD)")
+                    change_parts = []
+                    if pd.notna(prev_price) and prev_price != price:
+                        change_parts.append(f"{entry['name']} price {prev_price:g}→{price:g}")
+                    if pd.notna(prev_jazeera) and pd.notna(jazeera_price) and prev_jazeera != jazeera_price:
+                        change_parts.append(f"Jazeera price {prev_jazeera:g}→{jazeera_price:g}")
+                    if pd.notna(prev_alert) and prev_alert != alert_label:
+                        change_parts.append(f"Alert {prev_alert}→{alert_label}")
+                    change_note = "; ".join(change_parts) if change_parts else "No change"
+                else:
+                    prev_price = None
+                    prev_alert = None
+                    change_note = "First time seen"
+
                 history_rows.append({
                     "Scanned At": scanned_at,
                     "Route": route_label,
-                    "Date": d.strftime("%Y-%m-%d"),
+                    "Date": date_str,
                     "Competitor": entry["name"],
                     "Competitor Price (KWD)": price,
                     "Jazeera Price (KWD)": jazeera_price,
                     "Price Gap (KWD)": gap,
                     "Alert": alert_label,
+                    "Previous Price (KWD)": prev_price,
+                    "Previous Alert": prev_alert,
+                    "Change Note": change_note,
                 })
 
                 if only_alerts and not alert:
                     continue
 
-                row = {"Route": route_label, "Date": d.strftime("%Y-%m-%d")}
+                row = {"Route": route_label, "Date": date_str}
                 if trip_type == "RT":
                     row["Return Date"] = date_back.strftime("%Y-%m-%d")
                     row["Stay Nights"] = stay_nights
@@ -246,6 +383,7 @@ if submitted:
                     "Jazeera Price (KWD)": jazeera_price,
                     "Price Gap (KWD)": gap,
                     "Alert": alert_label,
+                    "Change vs last scan": change_note,
                 })
                 rows.append(row)
 
@@ -274,21 +412,6 @@ if submitted:
     else:
         df = pd.DataFrame(rows)
         st.success(f"Found {len(df)} result(s) across {len(routes)} route(s).")
-
-        def highlight_alert(row):
-            if row["Alert"] == "Yes":
-                return ["background-color: #FCE4E7"] * len(row)
-            if row["Alert"] == "No":
-                return ["background-color: #E5F3E8"] * len(row)
-            return [""] * len(row)
-
-        def fmt_num(x):
-            if pd.isna(x):
-                return ""
-            if isinstance(x, (int, float)):
-                return f"{x:g}"
-            return x
-
         st.caption("🔴 Competitor is cheaper than Jazeera　🟢 Jazeera is cheaper or equal")
         st.dataframe(
             df.style.apply(highlight_alert, axis=1).format(fmt_num),
@@ -305,24 +428,36 @@ if submitted:
             width="stretch",
         )
 
-with st.expander("📈 Historical alert log"):
+    # Per-route history, scoped so searching TZX only shows TZX's own past
+    # scans, not every route ever searched. Changes since the last scan of
+    # the exact same route/competitor/date are highlighted amber.
+    full_history = load_history()
+    st.subheader("📈 History for the route(s) just searched")
     st.caption(
-        "Every search you run gets appended here, so you can see patterns over time — e.g. how often a "
-        "competitor has undercut Jazeera on a route. Note: this is stored on the app's own disk, not a "
-        "real database, so it may reset if the app redeploys or sleeps for a long time — not guaranteed "
-        "permanent storage."
+        "🟧 Something changed since the last time this exact route/competitor/date was scanned "
+        "(see 'Change Note' for what and which competitor). Stored on the app's own disk — not "
+        "guaranteed to survive a redeploy or long idle period."
     )
-    history_df = load_history()
-    if history_df.empty:
-        st.caption("No history yet — run a search above to start logging.")
-    else:
-        st.dataframe(history_df.sort_values("Scanned At", ascending=False), width="stretch", hide_index=True)
-        history_buffer = io.BytesIO()
-        history_df.to_excel(history_buffer, index=False)
-        st.download_button(
-            "Download full history as Excel",
-            data=history_buffer.getvalue(),
-            file_name="price_gap_history.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            width="stretch",
+    for origin, destination in routes:
+        route_label = f"{origin}→{destination}"
+        route_history = full_history[full_history["Route"] == route_label].sort_values(
+            "Scanned At", ascending=False
         )
+        with st.expander(f"{route_label} ({len(route_history)} logged row(s))"):
+            if route_history.empty:
+                st.caption("No history yet for this route.")
+            else:
+                st.dataframe(
+                    route_history.style.apply(highlight_history, axis=1).format(fmt_num),
+                    width="stretch", hide_index=True,
+                )
+                hist_buffer = io.BytesIO()
+                route_history.to_excel(hist_buffer, index=False)
+                st.download_button(
+                    f"Download {route_label} history as Excel",
+                    data=hist_buffer.getvalue(),
+                    file_name=f"history_{origin}_{destination}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    width="stretch",
+                    key=f"hist_dl_{origin}_{destination}",
+                )
