@@ -439,7 +439,6 @@ if submitted:
                     "Jazeera Price (KWD)": jazeera_price,
                     "Price Gap (KWD)": gap,
                     "Alert": alert_label,
-                    "Change vs last scan": change_note,
                 })
                 rows.append(row)
 
