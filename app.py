@@ -155,22 +155,47 @@ def load_history():
     if not os.path.exists(HISTORY_PATH):
         return pd.DataFrame(columns=HISTORY_COLUMNS)
     try:
-        df = pd.read_csv(HISTORY_PATH)
+        df = pd.read_csv(HISTORY_PATH, encoding="utf-8")
         for col in HISTORY_COLUMNS:
             if col not in df.columns:
                 df[col] = None
         return df
-    except Exception:
+    except Exception as e:
+        st.warning(f"Could not read history file ({e}). Starting from an empty history for this view.")
         return pd.DataFrame(columns=HISTORY_COLUMNS)
 
 
 def append_history(new_rows):
+    """Returns (ok, message) -- ok is False if the write didn't actually
+    take (surfaced to the user instead of failing silently)."""
     if not new_rows:
-        return
-    os.makedirs(os.path.dirname(HISTORY_PATH), exist_ok=True)
-    df_new = pd.DataFrame(new_rows, columns=HISTORY_COLUMNS)
-    file_exists = os.path.exists(HISTORY_PATH)
-    df_new.to_csv(HISTORY_PATH, mode="a", header=not file_exists, index=False)
+        return True, "Nothing to log."
+    try:
+        os.makedirs(os.path.dirname(HISTORY_PATH), exist_ok=True)
+        df_new = pd.DataFrame(new_rows, columns=HISTORY_COLUMNS)
+        file_exists = os.path.exists(HISTORY_PATH)
+        df_new.to_csv(HISTORY_PATH, mode="a", header=not file_exists, index=False, encoding="utf-8")
+    except Exception as e:
+        return False, f"Could not write history file: {e}"
+
+    # Verify the write actually landed -- some hosting filesystems accept
+    # writes without error but don't persist them the way a normal local
+    # disk would, so confirm by reading straight back rather than trusting
+    # the absence of an exception.
+    try:
+        check_df = pd.read_csv(HISTORY_PATH, encoding="utf-8")
+    except Exception as e:
+        return False, f"Wrote history but could not verify it by reading it back: {e}"
+
+    scanned_at_written = {r["Scanned At"] for r in new_rows}
+    found = check_df[check_df["Scanned At"].isin(scanned_at_written)]
+    if len(found) < len(new_rows):
+        return False, (
+            f"Wrote {len(new_rows)} history row(s) but only {len(found)} were readable back "
+            f"immediately after (path: {HISTORY_PATH}). This app's hosting may not support "
+            "persistent local-disk storage the way this feature needs."
+        )
+    return True, f"Logged {len(new_rows)} row(s) to history."
 
 
 def fmt_num(x):
@@ -391,7 +416,9 @@ if submitted:
             progress.progress(step / total_steps, text=f"Checked {route_label} on {d}")
 
     progress.empty()
-    append_history(history_rows)
+    history_ok, history_message = append_history(history_rows)
+    if not history_ok:
+        st.error(f"⚠️ History logging failed this run: {history_message}")
 
     if not rows:
         if not any_itinerary_found:
