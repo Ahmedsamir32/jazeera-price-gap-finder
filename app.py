@@ -103,12 +103,9 @@ AIRPORTS = load_airports()
 
 # Streamlit's selectbox filters options with a fuzzy character-sequence match,
 # which for a 7,800-entry list gives useless results (typing "ktm" surfaces
-# "Frankfurt" before "Kathmandu"). So instead of relying on that, this is a
-# type-then-pick-from-ranked-matches pattern: a text input to search, and a
-# selectbox populated with just the (correctly ranked) matches for that query.
-NO_MATCH_LABEL = "No matches — try a different search"
-
-
+# "Frankfurt" before "Kathmandu"). So instead of relying on that, one text
+# input drives our own ranked search and auto-resolves to the top match,
+# shown as a small confirmation caption rather than a second dropdown.
 def label_for(code):
     return f"{AIRPORTS[code]} ({code})" if code in AIRPORTS else code
 
@@ -140,14 +137,14 @@ def search_airports(query, limit=15):
 
 def sector_picker(label, key_prefix, default_query=""):
     query = st.text_input(label, value=default_query, key=f"{key_prefix}_query", placeholder="e.g. Kathmandu or KTM")
-    matches = search_airports(query)
+    matches = search_airports(query, limit=1)
     if not matches:
-        st.selectbox(" ", [NO_MATCH_LABEL], key=f"{key_prefix}_match", label_visibility="collapsed", disabled=True)
+        if query.strip():
+            st.caption("⚠️ No match — try a different search, or type the 3-letter airport code.")
         return ""
-    match_labels = [label_for(c) for c in matches]
-    chosen = st.selectbox(" ", match_labels, key=f"{key_prefix}_match", label_visibility="collapsed")
-    idx = match_labels.index(chosen)
-    return matches[idx]
+    code = matches[0]
+    st.caption(f"✓ {label_for(code)}")
+    return code
 
 
 def _existing_header(path):
