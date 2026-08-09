@@ -5,6 +5,7 @@ import os
 import re
 from datetime import date, datetime, timedelta
 
+import airportsdata
 import pandas as pd
 import requests
 import streamlit as st
@@ -83,72 +84,70 @@ HISTORY_COLUMNS = [
     "Previous Price (KWD)", "Previous Alert", "Change Note",
 ]
 
-# Sectors known to this app so far. Add more here as you need them — anything
-# not listed can still be typed manually via "Other".
-AIRPORTS = {
-    "KWI": "Kuwait City",
-    "CAI": "Cairo",
-    "HBE": "Alexandria (Borg El Arab)",
-    "SSH": "Sharm El Sheikh",
-    "HRG": "Hurghada",
-    "LXR": "Luxor",
-    "ASW": "Aswan",
-    "IST": "Istanbul",
-    "SAW": "Istanbul (Sabiha Gökçen)",
-    "ADB": "Izmir",
-    "AYT": "Antalya",
-    "TZX": "Trabzon",
-    "ESB": "Ankara",
-    "ADJ": "Amman (Civil)",
-    "AMM": "Amman (Queen Alia)",
-    "BEY": "Beirut",
-    "DXB": "Dubai",
-    "AUH": "Abu Dhabi",
-    "DOH": "Doha",
-    "RUH": "Riyadh",
-    "JED": "Jeddah",
-    "DMM": "Dammam",
-    "MED": "Medina",
-    "BAH": "Bahrain",
-    "MCT": "Muscat",
-    "BGW": "Baghdad",
-    "BSR": "Basra",
-    "NJF": "Najaf",
-    "EBL": "Erbil",
-    "BOM": "Mumbai",
-    "DEL": "Delhi",
-    "COK": "Kochi",
-    "TRV": "Thiruvananthapuram",
-    "DAC": "Dhaka",
-    "KHI": "Karachi",
-    "LHE": "Lahore",
-    "ISB": "Islamabad",
-}
-OTHER_LABEL = "Other (type code manually)"
+# Every commercial airport worldwide with an IATA code (~7,800), from the
+# airportsdata package (bundled offline data, no network call at runtime).
+# City name collisions across countries are why the country code is in the
+# label too -- otherwise two different "Springfield (XXX)" would look the same.
+@st.cache_data
+def load_airports():
+    raw = airportsdata.load("IATA")
+    airports = {}
+    for code, info in raw.items():
+        city = info.get("city") or info.get("name") or code
+        country = info.get("country") or ""
+        airports[code] = f"{city}, {country}" if country else city
+    return airports
 
 
-SELECT_LABEL = "— Select sector —"
+AIRPORTS = load_airports()
+
+# Streamlit's selectbox filters options with a fuzzy character-sequence match,
+# which for a 7,800-entry list gives useless results (typing "ktm" surfaces
+# "Frankfurt" before "Kathmandu"). So instead of relying on that, this is a
+# type-then-pick-from-ranked-matches pattern: a text input to search, and a
+# selectbox populated with just the (correctly ranked) matches for that query.
+NO_MATCH_LABEL = "No matches — try a different search"
 
 
-def airport_options():
-    opts = [SELECT_LABEL]
-    opts += [f"{name} ({code})" for code, name in sorted(AIRPORTS.items(), key=lambda kv: kv[1])]
-    opts.append(OTHER_LABEL)
-    return opts
+def label_for(code):
+    return f"{AIRPORTS[code]} ({code})" if code in AIRPORTS else code
 
 
-def resolve_code(selection, manual_text):
-    if selection in (SELECT_LABEL, ""):
+def search_airports(query, limit=15):
+    query = query.strip().upper()
+    if not query:
+        return []
+    exact_code, code_prefix, city_prefix, contains = [], [], [], []
+    for code, city in AIRPORTS.items():
+        city_upper = city.upper()
+        if code == query:
+            exact_code.append(code)
+        elif code.startswith(query):
+            code_prefix.append(code)
+        elif city_upper.startswith(query):
+            city_prefix.append(code)
+        elif query in city_upper:
+            contains.append(code)
+    code_prefix.sort()
+    city_prefix.sort(key=lambda c: AIRPORTS[c])
+    contains.sort(key=lambda c: AIRPORTS[c])
+    ordered = exact_code + code_prefix + city_prefix + contains
+    if not ordered and len(query) == 3 and query.isalpha():
+        # Not in our data at all -- let them use it as-is rather than block them.
+        return [query]
+    return ordered[:limit]
+
+
+def sector_picker(label, key_prefix, default_query=""):
+    query = st.text_input(label, value=default_query, key=f"{key_prefix}_query", placeholder="e.g. Kathmandu or KTM")
+    matches = search_airports(query)
+    if not matches:
+        st.selectbox(" ", [NO_MATCH_LABEL], key=f"{key_prefix}_match", label_visibility="collapsed", disabled=True)
         return ""
-    if selection == OTHER_LABEL:
-        return manual_text.strip().upper()
-    m = re.search(r"\(([A-Za-z]{3})\)$", selection)
-    return m.group(1).upper() if m else selection.strip().upper()
-
-
-def option_for_code(code, options):
-    label = f"{AIRPORTS[code]} ({code})" if code in AIRPORTS else None
-    return options.index(label) if label in options else 0
+    match_labels = [label_for(c) for c in matches]
+    chosen = st.selectbox(" ", match_labels, key=f"{key_prefix}_match", label_visibility="collapsed")
+    idx = match_labels.index(chosen)
+    return matches[idx]
 
 
 def _existing_header(path):
@@ -259,30 +258,25 @@ if "num_routes" not in st.session_state:
     st.session_state.num_routes = 1
 
 st.subheader("Routes")
-AIRPORT_OPTIONS = airport_options()
 
 route_pairs = []
 for i in range(st.session_state.num_routes):
     col1, col2, col3 = st.columns([5, 5, 1])
     with col1:
-        default_idx = option_for_code("KWI", AIRPORT_OPTIONS) if i == 0 else 0
-        from_sel = st.selectbox("From (sector)", AIRPORT_OPTIONS, index=default_idx, key=f"from_sel_{i}")
-        from_manual = ""
-        if from_sel == OTHER_LABEL:
-            from_manual = st.text_input("From — airport code", key=f"from_manual_{i}")
+        origin_code = sector_picker(
+            "From (sector)", f"from_{i}", default_query="Kuwait City" if i == 0 else ""
+        )
     with col2:
-        default_idx = option_for_code("CAI", AIRPORT_OPTIONS) if i == 0 else 0
-        to_sel = st.selectbox("To (sector)", AIRPORT_OPTIONS, index=default_idx, key=f"to_sel_{i}")
-        to_manual = ""
-        if to_sel == OTHER_LABEL:
-            to_manual = st.text_input("To — airport code", key=f"to_manual_{i}")
+        destination_code = sector_picker(
+            "To (sector)", f"to_{i}", default_query="Cairo" if i == 0 else ""
+        )
     with col3:
         st.markdown("<div style='height: 1.9rem'></div>", unsafe_allow_html=True)
         if st.session_state.num_routes > 1:
             if st.button("✕", key=f"remove_route_{i}", help="Remove this route"):
                 st.session_state.num_routes -= 1
                 st.rerun()
-    route_pairs.append((resolve_code(from_sel, from_manual), resolve_code(to_sel, to_manual)))
+    route_pairs.append((origin_code, destination_code))
 
 if st.button("+ Add another route"):
     st.session_state.num_routes += 1
@@ -318,7 +312,7 @@ if submitted:
         st.error("Pick a valid From/To sector for at least one route.")
         st.stop()
     if incomplete_count:
-        st.warning(f"Skipped {incomplete_count} route row(s) left at \"{SELECT_LABEL}\".")
+        st.warning(f"Skipped {incomplete_count} route row(s) with no From/To match selected.")
     if start_date > end_date:
         st.error("The start date must be before the end date.")
         st.stop()
