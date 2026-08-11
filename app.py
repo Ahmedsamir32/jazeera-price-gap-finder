@@ -12,7 +12,7 @@ import streamlit as st
 
 from bootstrap import STOPS_LABELS, ensure_api_key
 
-st.set_page_config(page_title="Jazeera Price Gap Finder", page_icon="✈️", layout="wide")
+st.set_page_config(page_title="Jazeera Fare Gap Finder", page_icon="✈️", layout="wide")
 
 _has_api_key = ensure_api_key()
 import price_gap_finder_serpapi as core
@@ -62,7 +62,7 @@ _header_html = """
     <div class="jazeera-header">
         __LOGO_IMG__
         <div>
-            <span class="tool-name">J9 Price Gap Finder</span>
+            <span class="tool-name">J9 Fare Gap Finder</span>
             <div class="subtitle">Compare Jazeera Airways fares against every other airline flying the same route.</div>
         </div>
     </div>
