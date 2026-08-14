@@ -6,6 +6,7 @@ import re
 from datetime import date, datetime, timedelta
 
 import airportsdata
+import altair as alt
 import pandas as pd
 import requests
 import streamlit as st
@@ -29,7 +30,6 @@ _header_html = """
     <style>
     .jazeera-header {
         background: #FFFFFF;
-        border-bottom: 4px solid #1B4B9C;
         padding: 1.2rem 0.2rem 1rem 0.2rem;
         margin-bottom: 1.6rem;
         display: flex;
@@ -538,18 +538,61 @@ if submitted:
                 chart_data = route_history.copy()
                 chart_data["Scanned At"] = pd.to_datetime(chart_data["Scanned At"], errors="coerce")
                 if chart_data["Scanned At"].nunique() >= 2:
-                    # Pivot to one column per competitor (+ Jazeera) so
-                    # st.line_chart draws a separate line for each. If a scan
-                    # covered multiple flight dates at once, average across
-                    # them per timestamp rather than erroring on duplicate
-                    # index values.
-                    price_pivot = chart_data.pivot_table(
-                        index="Scanned At", columns="Competitor",
-                        values="Competitor Price (KWD)", aggfunc="mean",
+                    # Long-format frame: one point per (scan, airline) so the
+                    # hover tooltip can show the flight date next to the
+                    # price -- the raw pivot only showed scan date + price.
+                    # If a single scan covered several flight dates at once,
+                    # the price is averaged across them for that point and
+                    # every date scanned is listed in "Flight date(s)".
+                    competitor_points = chart_data.groupby(
+                        ["Scanned At", "Competitor"], as_index=False
+                    ).agg(
+                        Price=("Competitor Price (KWD)", "mean"),
+                        **{"Flight date(s)": ("Date", lambda s: ", ".join(sorted(set(s.astype(str)))))},
                     )
-                    price_pivot["Jazeera"] = chart_data.groupby("Scanned At")["Jazeera Price (KWD)"].mean()
-                    st.caption("📈 Price trend across scans (KWD, averaged across dates searched if more than one)")
-                    st.line_chart(price_pivot.sort_index())
+                    jazeera_points = chart_data.groupby("Scanned At", as_index=False).agg(
+                        Price=("Jazeera Price (KWD)", "mean"),
+                        **{"Flight date(s)": ("Date", lambda s: ", ".join(sorted(set(s.astype(str)))))},
+                    )
+                    jazeera_points["Competitor"] = "Jazeera"
+                    trend_points = pd.concat(
+                        [competitor_points, jazeera_points], ignore_index=True
+                    ).dropna(subset=["Price"])
+                    trend_points = trend_points.rename(columns={"Competitor": "Airline"})
+
+                    other_airlines = sorted(a for a in trend_points["Airline"].unique() if a != "Jazeera")
+                    palette = ["#D64550", "#2E8B57", "#E8A33D", "#8759B3", "#3C9EE0", "#C2657A", "#6BA368", "#B08968"]
+                    color_domain = ["Jazeera"] + other_airlines
+                    color_range = ["#1B4B9C"] + [palette[i % len(palette)] for i in range(len(other_airlines))]
+
+                    st.caption(
+                        "📈 Price trend across scans — hover any point to see the exact airline, "
+                        "price, scan date, and flight date it's for. Jazeera is the bold blue line."
+                    )
+                    trend_chart = (
+                        alt.Chart(trend_points)
+                        .mark_line(point=True)
+                        .encode(
+                            x=alt.X("Scanned At:T", title="Scan date"),
+                            y=alt.Y("Price:Q", title="Price (KWD)"),
+                            color=alt.Color(
+                                "Airline:N", title="Airline",
+                                scale=alt.Scale(domain=color_domain, range=color_range),
+                            ),
+                            strokeWidth=alt.condition(
+                                alt.datum.Airline == "Jazeera", alt.value(3.5), alt.value(1.5)
+                            ),
+                            tooltip=[
+                                alt.Tooltip("Airline:N", title="Airline"),
+                                alt.Tooltip("Price:Q", title="Price (KWD)", format=".0f"),
+                                alt.Tooltip("Scanned At:T", title="Scanned on", format="%b %d, %Y %H:%M"),
+                                alt.Tooltip("Flight date(s):N", title="Flight date(s)"),
+                            ],
+                        )
+                        .properties(height=340)
+                        .interactive()
+                    )
+                    st.altair_chart(trend_chart, use_container_width=True)
                 else:
                     st.caption("Scan this route again on a different day to start seeing a price trend chart here.")
 
