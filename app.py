@@ -517,23 +517,32 @@ if submitted:
         )
 
     # Per-route history, scoped so searching TZX only shows TZX's own past
-    # scans, not every route ever searched. Changes since the last scan of
-    # the exact same route/competitor/date are highlighted amber.
+    # scans, not every route ever searched -- and further scoped to only the
+    # flight date(s) in *this* search, so searching KWI->CAI for just 13 Sep
+    # doesn't drag in unrelated past scans of KWI->CAI for other dates.
+    # Changes since the last scan of the exact same route/competitor/date are
+    # highlighted amber.
     full_history = load_history()
+    searched_date_strs = {d.strftime("%Y-%m-%d") for d in dates}
+    date_range_note = (
+        f"flight date {dates[0]:%d %b %Y}" if len(dates) == 1
+        else f"flight dates {dates[0]:%d %b %Y} to {dates[-1]:%d %b %Y}"
+    )
     st.subheader("📈 History for the route(s) just searched")
     st.caption(
-        "🟧 Something changed since the last time this exact route/competitor/date was scanned "
-        "(see 'Change Note' for what and which competitor). Stored on the app's own disk — not "
-        "guaranteed to survive a redeploy or long idle period."
+        f"Scoped to {date_range_note} — the same flight date(s) as this search. 🟧 Something "
+        "changed since the last time this exact route/competitor/date was scanned (see 'Change "
+        "Note' for what and which competitor). Stored on the app's own disk — not guaranteed to "
+        "survive a redeploy or long idle period."
     )
     for origin, destination in routes:
         route_label = f"{origin}→{destination}"
-        route_history = full_history[full_history["Route"] == route_label].sort_values(
-            "Scanned At", ascending=False
-        )
+        route_history = full_history[
+            (full_history["Route"] == route_label) & (full_history["Date"].isin(searched_date_strs))
+        ].sort_values("Scanned At", ascending=False)
         with st.expander(f"{route_label} ({len(route_history)} logged row(s))"):
             if route_history.empty:
-                st.caption("No history yet for this route.")
+                st.caption(f"No history yet for this route on {date_range_note.replace('flight ', '')}.")
             else:
                 chart_data = route_history.copy()
                 chart_data["Scanned At"] = pd.to_datetime(chart_data["Scanned At"], errors="coerce")
