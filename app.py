@@ -77,6 +77,46 @@ if not _has_api_key:
 MAX_COMBINATIONS = 31  # routes x dates -- each combination is 1 API call
 JAZEERA_CODE = "J9"
 
+
+# ---------------- Quota usage dashboard ----------------
+# SerpAPI's /account endpoint reports real usage across every source that
+# shares this key (this app, the CLI script, anyone else running scans) --
+# far more trustworthy than counting locally, which would drift the moment
+# usage happens outside this one app process. It's a free account-info call,
+# not billed as a search. Cached for 10 min because the sector-search text
+# inputs rerun this whole script on every keystroke, and we don't want that
+# hammering the endpoint.
+@st.cache_data(ttl=600, show_spinner=False)
+def fetch_quota_status(api_key):
+    try:
+        resp = requests.get("https://serpapi.com/account.json", params={"api_key": api_key}, timeout=5)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        used, total = data.get("this_month_usage"), data.get("searches_per_month")
+        if used is None or total is None:
+            return None
+        return {
+            "used": used,
+            "total": total,
+            "left": data.get("total_searches_left"),
+            "renews": data.get("plan_renewal_date"),
+        }
+    except Exception:
+        return None
+
+
+quota = fetch_quota_status(core.SERPAPI_KEY)
+if quota and quota["total"]:
+    frac = quota["used"] / quota["total"]
+    renew_note = f" · resets {quota['renews']}" if quota.get("renews") else ""
+    label = f"SerpAPI usage: {quota['used']:,} / {quota['total']:,} searches this month{renew_note}"
+    st.progress(min(frac, 1.0), text=label)
+    if frac >= 0.95:
+        st.error(f"Only {quota['left']:,} searches left this month — you're about to hit the plan limit.")
+    elif frac >= 0.8:
+        st.warning(f"{quota['left']:,} searches left this month — pace out remaining scans.")
+
 HISTORY_PATH = os.path.join(os.path.dirname(__file__), "data", "history_log.csv")
 HISTORY_COLUMNS = [
     "Scanned At", "Route", "Date", "Competitor",
@@ -495,6 +535,24 @@ if submitted:
             if route_history.empty:
                 st.caption("No history yet for this route.")
             else:
+                chart_data = route_history.copy()
+                chart_data["Scanned At"] = pd.to_datetime(chart_data["Scanned At"], errors="coerce")
+                if chart_data["Scanned At"].nunique() >= 2:
+                    # Pivot to one column per competitor (+ Jazeera) so
+                    # st.line_chart draws a separate line for each. If a scan
+                    # covered multiple flight dates at once, average across
+                    # them per timestamp rather than erroring on duplicate
+                    # index values.
+                    price_pivot = chart_data.pivot_table(
+                        index="Scanned At", columns="Competitor",
+                        values="Competitor Price (KWD)", aggfunc="mean",
+                    )
+                    price_pivot["Jazeera"] = chart_data.groupby("Scanned At")["Jazeera Price (KWD)"].mean()
+                    st.caption("📈 Price trend across scans (KWD, averaged across dates searched if more than one)")
+                    st.line_chart(price_pivot.sort_index())
+                else:
+                    st.caption("Scan this route again on a different day to start seeing a price trend chart here.")
+
                 st.dataframe(
                     route_history.style.apply(highlight_history, axis=1).format(fmt_num),
                     width="stretch", hide_index=True,
